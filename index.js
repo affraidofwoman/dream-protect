@@ -168,11 +168,12 @@ const DEFAULT = {
   prefixes: ['=','+','&','.','-'],
   ui: { color:'#5865F2', error:'#ED4245', ok:'#57F287', warn:'#FEE75C', footer:'DREAM', image:null, banner:null },
   logs: { auto:true, categories:['modération','accès','rôles','tickets','paiements','musique','système'] },
-  stats: { auto:true, interval:10, channelId:null },
+  stats: { auto:true, interval:10, channelId:null, voice:false, category:null, channels:{} },
+  logGuild: null,
   roles: { protect:true, removeUnauthorized:true, interactionRoles:[], protectedMinLevel:0 },
   music: { enabled:true, volume:70, channelId:null },
   community: { welcome:true, welcomeChannelId:null, autoroles:[], reactionRoles:true, personalVoice:true },
-  ticket: { categoryId:null, staffRoleId:null, types:[['sanction','Sanction'],['contribution','Contribution'],['bataillon','Bataillon Confirmé'],['autre','Autre']] },
+  ticket: { categoryId:null, staffRoleId:null, roles:{}, types:[['sanction','Sanction'],['contribution','Contribution'],['bataillon','Bataillon Confirmé'],['autre','Autre']] },
   payment: { channelId:null, methods:['PayPal','Lydia','Virement'], currency:'€' },
   protectChannel: { channelId:null },
   automation: { health:5, backup:30 },
@@ -442,7 +443,8 @@ async function restoreDeletedLog(message) {
   }
 }
 async function ensureLogs(g) {
-  return ensureLogTree(g);
+  const home=logHome(g);
+  return home?ensureLogTree(home):{created:0,kept:0};
 }
 
 async function restoreDeletedLogBulk(messages, channel) {
@@ -691,18 +693,6 @@ async function autoSetup(g){
     if(ch){ setCfg(g.id,x=>{x.configuration.destinations[key]=ch.id;if(key==='welcome')x.configuration.welcome.channelId=ch.id;}); }
   }
   await ensureLogs(g);
-  const commuGuild=clients.one.guilds.cache.get(g.id);
-  if(commuGuild){ const main=configChannel(commuGuild,'global')||commuGuild.systemChannel; if(main){ const existing=await main.messages.fetch({limit:20}).catch(()=>null); const found=existing?.find(x=>x.author.id===clients.one.user?.id && x.embeds?.[0]?.title?.includes('DREAM • Centre')); if(!found) await main.send({embeds:[embed(g.id,{title:'🌙 DREAM • Centre communautaire',description:'Le serveur est configuré. Utilise les panneaux ci-dessous pour accéder aux fonctions communautaires.'}),],components:[row(btn('dream:home','Ouvrir le centre',ButtonStyle.Primary))]}).catch(()=>{}); } }
-}
-
-async function publishConfiguredPanels(g){
-  const cg=clients.one.guilds.cache.get(g.id); if(!cg)return;
-  const targets=[
-    ['ticket','🎫 DREAM • Tickets','Choisis directement le motif de ton ticket.'],
-    ['giveaways','🎁 DREAM • Giveaways','Les giveaways configurés sur ce serveur seront publiés ici.'],
-    ['global','🌙 DREAM • Centre','Le centre communautaire DREAM est disponible ici.']
-  ];
-  for(const [kind,title,description] of targets){ const ch=configChannel(cg,kind)||cg.systemChannel; if(!ch)continue; const recent=await ch.messages.fetch({limit:20}).catch(()=>null); const found=recent?.find(m=>m.author.id===clients.one.user?.id&&m.embeds?.[0]?.title===title); if(!found){const ticketRows=cfg(g.id).ticket.types.map(([v,l])=>btn(`ticket:open:${v}`,l,ButtonStyle.Secondary));const components=kind==='ticket'?[row(...ticketRows.slice(0,4))]:[row(btn(kind==='giveaways'?'dream:home':'dream:home',kind==='giveaways'?'Voir les concours':'Ouvrir le centre',ButtonStyle.Primary))];await ch.send({embeds:[embed(g.id,{title,description})],components}).catch(()=>{});} }
 }
 
 function configurationEmbed(g){
@@ -835,14 +825,45 @@ function statsText(g){
   const channels=g.channels.cache.size, roles=g.roles.cache.filter(r=>r.id!==g.id).size;
   return {members,bots,humans,channels,roles};
 }
+// Stats vocales
+const STAT_KEYS=[['membres','👥','Membres'],['enligne','🌐','En ligne'],['vocal','🔊','Vocal'],['lien','🔗',null]];
+const statRenamed=new Map(),statCounts=new Map();
+async function statValues(g){
+  let hit=statCounts.get(g.id);
+  if(!hit||Date.now()-hit.at>5*60e3){
+    const full=await clients.two.guilds.fetch({guild:g.id,withCounts:true,force:true}).catch(()=>null);
+    let lien=g.vanityURLCode?`.gg/${g.vanityURLCode}`:null;
+    if(!lien){const inv=await g.invites.fetch().catch(()=>null);const p=inv?.find(x=>x.maxAge===0&&x.maxUses===0);if(p)lien=`.gg/${p.code}`;}
+    hit={at:Date.now(),online:full?.approximatePresenceCount??null,lien};statCounts.set(g.id,hit);
+  }
+  const vocal=g.channels.cache.filter(c=>c.isVoiceBased()).reduce((n,c)=>n+c.members.size,0);
+  return {membres:g.memberCount,enligne:hit.online,vocal,lien:hit.lien};
+}
+function statName([key,emoji,label],v){
+  if(!label)return `${emoji} · ${v[key]||'Aucun lien'}`;
+  return `${emoji} · ${label} : ${v[key]==null?'—':Number(v[key]).toLocaleString('fr-FR')}`;
+}
 async function updateStats(g) {
-  const c=cfg(g.id); if(!c.stats.auto)return;
-  let ch=c.stats.channelId?g.channels.cache.get(c.stats.channelId):null;
-  if(!ch){ ch=await g.channels.create({name:'📊・stats',type:ChannelType.GuildText,reason:'DREAM stats'}).catch(()=>null); if(!ch)return; setCfg(g.id,x=>x.stats.channelId=ch.id); }
-  const s=statsText(g), old=db.prepare('SELECT message_id FROM stats WHERE guild_id=?').get(g.id); let msg=old?.message_id?await ch.messages.fetch(old.message_id).catch(()=>null):null;
-  const e=embed(g.id,{title:'📊 DREAM • Statistiques',description:`Membres : **${s.members}**\nHumains : **${s.humans}**\nBots : **${s.bots}**\nSalons : **${s.channels}**\nRôles : **${s.roles}**`,image:c.ui.image||undefined});
-  if(msg)await msg.edit({embeds:[e]}).catch(()=>{msg=null}); if(!msg)msg=await ch.send({embeds:[e]}).catch(()=>null);
-  if(msg)db.prepare('INSERT INTO stats(guild_id,message_id,channel_id,updated_at) VALUES(?,?,?,?) ON CONFLICT(guild_id) DO UPDATE SET message_id=excluded.message_id,channel_id=excluded.channel_id,updated_at=excluded.updated_at').run(g.id,msg.id,ch.id,now());
+  g=clients.two.guilds.cache.get(g?.id)||null;
+  if(!g||!cfg(g.id).stats.voice)return;
+  if(!g.members.me?.permissions?.has(PermissionFlagsBits.ManageChannels))return;
+  const view=[{id:g.roles.everyone.id,allow:[PermissionFlagsBits.ViewChannel],deny:[PermissionFlagsBits.Connect]}];
+  const c=cfg(g.id);
+  let cat=c.stats.category?g.channels.cache.get(c.stats.category):null;
+  if(!cat){cat=await g.channels.create({name:'Statistiques',type:ChannelType.GuildCategory,position:0,permissionOverwrites:view,reason:'DREAM stats'}).catch(()=>null);if(!cat)return;setCfg(g.id,x=>x.stats.category=cat.id);}
+  const v=await statValues(g),ids={...(c.stats.channels||{})};
+  for(const s of STAT_KEYS){
+    const name=statName(s,v);let ch=ids[s[0]]?g.channels.cache.get(ids[s[0]]):null;
+    if(!ch){ch=await g.channels.create({name,type:ChannelType.GuildVoice,parent:cat.id,permissionOverwrites:view,reason:'DREAM stats'}).catch(()=>null);if(ch){ids[s[0]]=ch.id;statRenamed.set(ch.id,Date.now());}continue;}
+    if(ch.name===name||Date.now()-(statRenamed.get(ch.id)||0)<5*60e3)continue;
+    statRenamed.set(ch.id,Date.now());await ch.setName(name,'DREAM stats').catch(()=>{});
+  }
+  if(JSON.stringify(ids)!==JSON.stringify(c.stats.channels||{}))setCfg(g.id,x=>x.stats.channels=ids);
+}
+async function removeStats(g){
+  const c=cfg(g.id);
+  for(const id of [...Object.values(c.stats.channels||{}),c.stats.category].filter(Boolean))await g.channels.cache.get(id)?.delete('DREAM stats').catch(()=>{});
+  setCfg(g.id,x=>{x.stats.voice=false;x.stats.category=null;x.stats.channels={};});
 }
 
 async function repairLocks(g){
@@ -860,7 +881,6 @@ async function refreshManagedMessages(g){
       await msg.edit({embeds:[embedFor(g.id,rec.owner_id,payload)]}).catch(()=>{});
     }catch{}
   }
-  await publishConfiguredPanels(g);
 }
 
 const instantRefreshTimers=new Map();
@@ -890,8 +910,7 @@ async function refreshGuild(g){
   ensureCommandConfig(g.id);
   ensureHierarchy(g.id);
   syncLinkedLevels(g.id);
-  await autoSetup(g);
-  await ensureLogTree(g);
+  syncTierOrder(g.id);
   await repairLocks(g);
   await updateStats(g);
   await refreshManagedMessages(g);
@@ -899,7 +918,6 @@ async function refreshGuild(g){
   await syncCustomCommands(g).catch(()=>{});
   for(const x of db.prepare('SELECT * FROM custom_emojis WHERE guild_id=?').all(g.id)){if(!g.emojis.cache.has(x.emoji_id))db.prepare('DELETE FROM custom_emojis WHERE guild_id=? AND emoji_id=?').run(g.id,x.emoji_id);}
   pruneHistory(g.id);
-  await welcomePanel(g).catch(()=>{});
   await startupCheck(g).catch(()=>{});
   await refreshTables(g).catch(()=>{});
   pruneAudit();
@@ -969,7 +987,7 @@ async function openDream(i,section='home'){
   if(section==='payments')components=[row(btn('pay:add','Ajouter'),btn('pay:list','Liste'),btn('pay:prices','Prix')),row(btn('dream:server','Retour'))];
   if(section==='messages')components=[row(btn('msg:create','Créer'),btn('msg:edit','Modifier'),btn('msg:v2','Convertir')),row(btn('dream:content','Retour'))];
   if(section==='settings')components=[row(btn('set:ui','Interface'),btn('set:community','Communauté'),btn('set:auto','Automatique')),row(btn('dream:server','Retour'))];
-  if(section==='stats')components=[row(btn('stats:refresh','Actualiser'),btn('stats:auto','Automatique')),row(btn('dream:home','Retour'))];
+  if(section==='stats')components=[row(btn('stats:refresh','Actualiser'),btn('stats:auto','Salons vocaux on/off')),row(btn('dream:home','Retour'))];
   if(section==='pv')components=[row(btn('pv:create','Activer ici'),btn('pv:access','Accès'),btn('pv:info','Infos')),row(btn('dream:vocal','Retour'))];
   return i.reply({embeds:[e],components,flags:MessageFlags.Ephemeral});
 }
@@ -1127,8 +1145,6 @@ async function handleButton(i){
     if(action==='toggle'){setCfg(i.guildId,c=>c.logs.auto=!c.logs.auto);return i.reply({content:`✅ Auto logs : **${cfg(i.guildId).logs.auto?'ON':'OFF'}**`,flags:MessageFlags.Ephemeral});}
   }
   if(scope==='ticket'){
-    if(action==='open'){const type=extra||'autre';const typeLabel=(cfg(i.guildId).ticket.types.find(x=>x[0]===type)||['autre','Autre'])[1];const base=`ticket-${type}-${i.user.username}`.toLowerCase().replace(/[^a-z0-9-]/g,'-').slice(0,90);const ch=await i.guild.channels.create({name:base,type:ChannelType.GuildText,parent:cfg(i.guildId).ticket.categoryId||cfg(i.guildId).configuration.destinations?.ticketCategory||undefined,permissionOverwrites:[{id:i.guild.id,deny:[PermissionFlagsBits.ViewChannel]},{id:i.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages]}]});db.prepare('INSERT INTO tickets(guild_id,channel_id,creator_id,status,created_at) VALUES(?,?,?,?,?)').run(i.guildId,ch.id,i.user.id,'OPEN',now());await ch.send({embeds:[embed(i.guildId,{title:`🎫 Ticket • ${typeLabel}`,description:`Bienvenue ${i.user}.\n\nDécris ta demande ici.`})],components:[row(btn('ticket:close','Fermer',ButtonStyle.Danger))]});await log(i.guild,'tickets','Ticket ouvert',`${ch} • ${typeLabel} par <@${i.user.id}>`,i.user.id);return i.reply({content:`✅ ${ch}`,flags:MessageFlags.Ephemeral});}
-    if(action==='close'){const t=db.prepare('SELECT * FROM tickets WHERE guild_id=? AND channel_id=? AND status=?').get(i.guildId,i.channelId,'OPEN');if(!t)throw new Error('Ce salon n’est pas un ticket ouvert.');if(t.creator_id!==i.user.id)requireAccess(i.guildId,i.user.id,'ticket-close',40,'WLTICKET');db.prepare('UPDATE tickets SET status=?,closed_at=? WHERE id=?').run('CLOSED',now(),t.id);await log(i.guild,'tickets','Ticket fermé',`Salon <#${i.channelId}>`,i.user.id);return i.reply({content:'🔒 Ticket fermé.',flags:MessageFlags.Ephemeral});}
     if(action==='repair'){for(const t of db.prepare('SELECT * FROM tickets WHERE guild_id=? AND status=?').all(i.guildId,'OPEN'))if(!i.guild.channels.cache.has(t.channel_id))db.prepare('UPDATE tickets SET status=?,closed_at=? WHERE id=?').run('CLOSED',now(),t.id);return i.reply({content:'✅ Tickets vérifiés.',flags:MessageFlags.Ephemeral});}
   }
   if(scope==='pay'){
@@ -1154,7 +1170,12 @@ async function handleButton(i){
   if(scope==='stats'){
     requireAccess(i.guildId,i.user.id,'stats',0);
     if(action==='refresh'){await updateStats(i.guild);return i.reply({content:'📊 Statistiques actualisées.',flags:MessageFlags.Ephemeral});}
-    if(action==='auto'){setCfg(i.guildId,c=>c.stats.auto=!c.stats.auto);return i.reply({content:`📊 Auto stats : **${cfg(i.guildId).stats.auto?'ON':'OFF'}**`,flags:MessageFlags.Ephemeral});}
+    if(action==='auto'){
+      requireCmd(i.guildId,i.user.id,'=stats');
+      if(cfg(i.guildId).stats.voice){await removeStats(i.guild);return i.reply({content:'📊 Salons de stats retirés.',flags:MessageFlags.Ephemeral});}
+      setCfg(i.guildId,c=>c.stats.voice=true);await updateStats(i.guild);
+      return i.reply({content:'📊 Salons de stats créés en haut du serveur.',flags:MessageFlags.Ephemeral});
+    }
   }
 }
 
@@ -1389,7 +1410,7 @@ Tu peux soit l’envoyer dans le salon configuré, soit confirmer pour l’envoy
       if(n==='wl')return openDream(i,'wl');
       if(n==='wl-role')return handleButton({ ...i, customId:'wlrole:panel' });
       if(n==='music')return openDream(i,'music');
-      if(n==='logs'){requireAccess(i.guildId,i.user.id,'logs',50);await ensureLogs(i.guild);return i.reply({content:'✅ Logs créés/vérifiés.',flags:MessageFlags.Ephemeral});}
+      if(n==='logs'){requireCmd(i.guildId,i.user.id,'=logs');return i.reply({...await logsPicker(i.guildId,i.user.id),flags:MessageFlags.Ephemeral});}
       if(n==='role')return openDream(i,'roles');
       if(n==='ticket')return openDream(i,'tickets');
       if(n==='payment')return openDream(i,'payments');
@@ -1445,7 +1466,7 @@ async function handlePrefix(m){
     if(/^=faq$/i.test(t)){return m.reply({embeds:[embed(gid,{title:'☑️ La FAQ DREAM',description:'Choisis un sujet : Général • Tickets • WL • Bots'})],components:[row(btn('faq:general','Général'),btn('faq:tickets','Tickets'),btn('faq:wl','WL'),btn('faq:bot','Bots'))]});}
     if(/^=(?:hierarchy|perms)$/i.test(t)){
       requireCmd(gid,m.author.id,'=ui');
-      if(/^=hierarchy$/i.test(t))return m.reply({embeds:[embedFor(gid,m.author.id,{title:'📚 Hiérarchie',description:ladderText(gid,m.guild),footer:`Niveaux ${TIER_MIN} à ${TIER_MAX} pour les rôles · au-dessus = accès internes`})]});
+      if(/^=hierarchy$/i.test(t))return m.reply({embeds:[embedFor(gid,m.author.id,{title:'📚 Hiérarchie',description:ladderText(gid,m.guild),footer:'L’ordre suit celui des rôles Discord.'})]});
       const mine=CMD_ACCESS.filter(e=>allowCmd(gid,m.author.id,e[0])).map(e=>cmdRuleText(gid,e[0]));
       return m.reply({embeds:[embedFor(gid,m.author.id,{title:'🔐 Tes droits',description:mine.join('\n').slice(0,4000)||'Aucun droit particulier.',footer:`${levelNameFor(gid,m.author.id)} · ${mine.length} commande${mine.length>1?'s':''}`})]});
     }
@@ -1487,6 +1508,24 @@ function ensureHierarchy(gid){
 }
 function systemRows(gid){ensureHierarchy(gid);return db.prepare('SELECT name,level,role_id FROM hierarchy WHERE guild_id=? ORDER BY level DESC').all(gid);}
 function tierRows(gid){return db.prepare('SELECT role_id,name,level FROM linked_roles WHERE guild_id=? ORDER BY level DESC').all(gid);}
+function staffRows(gid){return tierRows(gid).filter(x=>x.level<=TIER_MAX);}
+// Order from Discord
+function syncTierOrder(gid){
+  const g=guildOf(gid);if(!g?.roles?.cache)return;
+  const rows=staffRows(gid).map(x=>({...x,pos:g.roles.cache.get(x.role_id)?.position??-1}));
+  rows.sort((a,b)=>b.pos-a.pos||b.level-a.level);
+  let changed=false;
+  rows.forEach((x,n)=>{const level=Math.max(TIER_MIN,TIER_MAX-n);const name=g.roles.cache.get(x.role_id)?.name||x.name;if(level!==x.level||name!==x.name){db.prepare('UPDATE linked_roles SET level=?,name=? WHERE guild_id=? AND role_id=?').run(level,String(name).slice(0,80),gid,x.role_id);changed=true;}});
+  if(changed)clearRankCache(gid);
+}
+function addTier(gid,role,actorId=null){
+  if(!role?.id)throw new Error('Rôle introuvable.');
+  if(role.managed)throw new Error('Un rôle de bot ne peut pas entrer dans la hiérarchie.');
+  if(tierOf(gid,role.id))return;
+  db.prepare('INSERT INTO linked_roles(guild_id,role_id,name,level,created_at) VALUES(?,?,?,?,?)').run(gid,role.id,String(role.name||role.id).slice(0,80),TIER_MIN,now());
+  syncTierOrder(gid);clearRankCache(gid);
+  if(actorId&&!globalOwner(actorId)&&tierOf(gid,role.id).level>=rank(gid,actorId)){db.prepare('DELETE FROM linked_roles WHERE guild_id=? AND role_id=?').run(gid,role.id);syncTierOrder(gid);clearRankCache(gid);throw new Error('Ce rôle est au-dessus du tien.');}
+}
 function hierarchyRows(gid){
   const sys=systemRows(gid).map(x=>({name:x.name,level:x.level,role_id:x.role_id,system:1}));
   const tiers=tierRows(gid).map(x=>({name:x.name,level:x.level,role_id:x.role_id,system:0}));
@@ -1556,15 +1595,13 @@ function roleRank(gid,uid){
 function levelOptions(gid){
   const seen=new Set();
   return hierarchyRows(gid).filter(x=>{const k=String(x.level);if(seen.has(k))return false;seen.add(k);return true;})
-    .slice(0,25).map(x=>({label:`${x.name} · ${x.level}`,value:String(x.level),description:x.system?'accès interne':'rôle de l’échelle'}));
+    .slice(0,25).map(x=>({label:x.name,value:String(x.level),description:x.system?'accès interne':'staff'}));
 }
 function ladderText(gid,guild=null){
-  const rows=hierarchyRows(gid);
-  if(!rows.length)return 'Aucun niveau.';
-  return rows.map(x=>{
-    const tag=x.role_id?`<@&${x.role_id}>`:(x.system?'_accès interne_':'rôle supprimé');
-    return `\`${String(x.level).padStart(3,' ')}\` ${x.system?'🔒':'🎭'} **${x.name}** · ${tag}`;
-  }).join('\n');
+  const top=systemRows(gid).map(x=>`🔒 **${x.name}**${x.role_id?` · <@&${x.role_id}>`:''}`).join('\n');
+  const staff=staffRows(gid);
+  const list=staff.length?staff.map((x,n)=>`\`${n+1}.\` <@&${x.role_id}>`).join('\n'):'_Aucun rôle pour l’instant. Ajoute-les avec le menu._';
+  return `${top}\n\n**Staff** · du plus haut au plus bas\n${list}`;
 }
 function ladderPanel(gid){
   return [
@@ -1633,9 +1670,24 @@ const LOG_TREE=[
 const LOG_NAMES=new Map(LOG_TREE.flatMap(([,ch])=>ch));
 const LEGACY_LOG={'modération':'ban','accès':'wl','rôles':'role','tickets':'ticket','paiements':'paiement','musique':'musique','système':'sante'};
 function logKey(category){return LOG_NAMES.has(category)?category:(LEGACY_LOG[category]||'sante');}
+function logHome(g){const id=g?cfg(g.id).logGuild:null;return id?clients.two.guilds.cache.get(id)||null:null;}
 function logChannel(g,key){
-  const rec=db.prepare('SELECT channel_id FROM log_channels WHERE guild_id=? AND key=?').get(g.id,key);
-  return rec?.channel_id?g.channels.cache.get(rec.channel_id)||null:null;
+  const home=logHome(g);if(!home)return null;
+  const rec=db.prepare('SELECT channel_id FROM log_channels WHERE guild_id=? AND key=?').get(home.id,key);
+  return rec?.channel_id?home.channels.cache.get(rec.channel_id)||null:null;
+}
+// Logs server picker
+async function logsPicker(gid,uid){
+  const list=[];
+  for(const x of clients.two.guilds.cache.values()){
+    if(!x.members.me?.permissions?.has(PermissionFlagsBits.ManageChannels))continue;
+    if(globalOwner(uid)||x.ownerId===uid){list.push(x);continue;}
+    const m=await x.members.fetch(uid).catch(()=>null);
+    if(m?.permissions?.has(PermissionFlagsBits.ManageGuild))list.push(x);
+  }
+  const home=logHome(guildOf(gid));
+  const text=home?`Les logs vont sur **${home.name}**.\nChoisis un autre serveur pour les déplacer.`:'Choisis le serveur où ranger les logs.\nJe crée les salons là-bas, rien ici.';
+  return {embeds:[embedFor(gid,uid,{title:'🗂️ Logs',description:text})],components:[row(sel('logs:home','Serveur des logs',list.map(x=>({label:x.name,value:x.id,description:x.id===gid?'Ce serveur':`${x.memberCount} membres`}))))]};
 }
 function mirrorChannel(g,key){
   const rec=db.prepare('SELECT mirror_id FROM log_channels WHERE guild_id=? AND key=?').get(g.id,key);
@@ -1674,9 +1726,9 @@ async function ensureLogTree(g){
 async function logTo(g,category,o={}){
   if(!g)return null;
   const key=logKey(category);
-  let ch=logChannel(g,key);
-  if(!ch){await ensureLogTree(g);ch=logChannel(g,key);}
-  const fields=o.fields||(o.actor?[{name:'Membre',value:`<@${o.actor}>`,inline:true},{name:'Résultat',value:o.result||'OK',inline:true}]:[]);
+  const ch=logChannel(g,key);
+  const fields=[...(o.fields||(o.actor?[{name:'Membre',value:`<@${o.actor}>`,inline:true},{name:'Résultat',value:o.result||'OK',inline:true}]:[]))];
+  if(ch&&ch.guild.id!==g.id)fields.push({name:'Serveur',value:g.name,inline:true});
   const payload={embeds:[embed(g.id,{title:o.title,description:o.description||'—',fields,timestamp:true})],allowedMentions:{parse:[]}};
   let message=null;
   if(ch)message=await ch.send(payload).catch(()=>null);
@@ -1718,7 +1770,7 @@ function tableBody(g,key){
     const roleWl=db.prepare('SELECT grade,COUNT(*) AS n FROM wl_role WHERE guild_id=? GROUP BY grade').all(gid);
     return [kinds.map(x=>`**${x.kind}** — ${x.n}`).join('\n')||'Aucune WL.','',roleWl.map(x=>`WL rôle **${x.grade}** — ${x.n}`).join('\n')||'Aucune WL rôle.'].join('\n');
   }
-  if(key==='hierarchie')return hierarchyRows(gid).map(x=>`**${x.level}** · ${x.name}${x.role_id?` → <@&${x.role_id}>`:''}`).join('\n')||'Hiérarchie vide.';
+  if(key==='hierarchie')return ladderText(gid);
   if(key==='protect'){
     const roles=db.prepare('SELECT role_id FROM protected_roles WHERE guild_id=?').all(gid);
     const chans=db.prepare('SELECT channel_id,min_level FROM protected_channels WHERE guild_id=?').all(gid);
@@ -1773,10 +1825,10 @@ function tableBody(g,key){
   }
   return '—';
 }
-async function tablesChannel(g){
+async function tablesChannel(g,create=false){
   const rec=db.prepare("SELECT channel_id FROM panels WHERE guild_id=? AND key='__channel'").get(g.id);
   let ch=rec?.channel_id?g.channels.cache.get(rec.channel_id):null;
-  if(ch)return ch;
+  if(ch||!create)return ch;
   if(!g.members?.me?.permissions?.has(PermissionFlagsBits.ManageChannels))return null;
   const hide=[{id:g.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages]}];
   let cat=g.channels.cache.find(c=>c.type===ChannelType.GuildCategory&&c.name===TABLE_CATEGORY)||null;
@@ -1786,9 +1838,9 @@ async function tablesChannel(g){
   if(ch)db.prepare("INSERT INTO panels(guild_id,key,channel_id,message_id,updated_at) VALUES(?,'__channel',?,NULL,?) ON CONFLICT(guild_id,key) DO UPDATE SET channel_id=excluded.channel_id,updated_at=excluded.updated_at").run(g.id,ch.id,now());
   return ch;
 }
-async function refreshTables(g){
+async function refreshTables(g,create=false){
   if(!g)return 0;
-  const ch=await tablesChannel(g);if(!ch)return 0;
+  const ch=await tablesChannel(g,create);if(!ch)return 0;
   let n=0;
   for(const [key,title] of TABLE_DEFS){
     let body='—';
@@ -1807,11 +1859,11 @@ async function runSetup(g,actorId){
   ensureCommandConfig(g.id);
   syncLinkedLevels(g.id);
   const steps=[];
-  const tree=await ensureLogTree(g);
+  const tree=await ensureLogs(g);
   steps.push(['Logs',`${tree.created} créé${tree.created>1?'s':''} · ${tree.kept} déjà en place`]);
   await autoSetup(g).catch(()=>{});
   steps.push(['Salons','destinations vérifiées']);
-  const tables=await refreshTables(g);
+  const tables=await refreshTables(g,true);
   steps.push(['Tableaux',`${tables}/${TABLE_DEFS.length} à jour`]);
   await repairLocks(g).catch(()=>{});
   await updateStats(g).catch(()=>{});
@@ -2039,6 +2091,8 @@ const CMD_ACCESS=[
   ['=panneau','Panneaux de rôles','admin'],
   ['=couleur','Thème du serveur','admin'],
   ['=mirror','Double log','admin'],
+  ['=stats','Salons de stats','admin'],
+  ['=ticket','Panneau des tickets','admin'],
   ['=setup','Tout mettre en place','admin'],
   ['=hierarchie','Hiérarchie des rôles','admin'],
   ['=droits','Droits des commandes','admin'],
@@ -2107,39 +2161,120 @@ async function publishRolePanel(g,key,title,roleIds,channel=null){
 }
 
 // Tickets
-async function ticketTranscript(ch){
+const TICKET_TYPES=[
+  {value:'sanction',prefix:'sanction',label:'Sanction',emoji:'⚖️',style:ButtonStyle.Danger,description:'Sanctionné et tu penses que c’est injuste ? Explique-toi ici.'},
+  {value:'contribution',prefix:'contribution',label:'Contribution',emoji:'💎',style:ButtonStyle.Success,description:'Contribuer, monter en perms ou déclarer un paiement.'},
+  {value:'bataillon',prefix:'confirme',label:'Bataillon Confirmé',emoji:'🛡️',style:ButtonStyle.Primary,description:'Rejoindre les membres reconnus du serveur. C’est gratuit.'},
+  {value:'autre',prefix:'help',label:'Autre',emoji:'💬',style:ButtonStyle.Secondary,description:'Tout le reste. Si tu hésites, prends celui-là.'}
+];
+function ticketType(v){return TICKET_TYPES.find(x=>x.value===v)||TICKET_TYPES[TICKET_TYPES.length-1];}
+function ticketPanel(gid){
+  return {
+    embeds:[embed(gid,{title:'🎫 Support',description:['Une question, un souci, une demande ? Choisis le motif, on prend le relais.','',...TICKET_TYPES.map(t=>`${t.emoji} **${t.label}** — ${t.description}`)].join('\n'),footer:'Support · un ticket par demande'})],
+    components:[new ActionRowBuilder().addComponents(TICKET_TYPES.map(v=>new ButtonBuilder().setCustomId(`ticket:open:${v.value}`).setLabel(v.label).setEmoji(v.emoji).setStyle(v.style)))]
+  };
+}
+function ticketRoles(g,type){
+  const set=(cfg(g.id).ticket.roles?.[type]||[]).filter(id=>g.roles.cache.has(id));
+  if(set.length)return {ids:set,ping:true};
+  const staff=cfg(g.id).ticket.staffRoleId;
+  if(staff&&g.roles.cache.has(staff))return {ids:[staff],ping:false};
+  return {ids:staffRows(g.id).map(x=>x.role_id).filter(id=>g.roles.cache.has(id)),ping:false};
+}
+async function ticketCategory(g){
+  const id=cfg(g.id).ticket.categoryId||cfg(g.id).configuration.destinations?.ticketCategory;
+  let cat=id?g.channels.cache.get(id):null;
+  if(!cat)cat=g.channels.cache.find(c=>c.type===ChannelType.GuildCategory&&/ticket/i.test(c.name))||null;
+  if(!cat)cat=await g.channels.create({name:'tickets',type:ChannelType.GuildCategory,permissionOverwrites:[{id:g.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel]}],reason:'DREAM tickets'}).catch(()=>null);
+  if(cat&&cat.id!==id)setCfg(g.id,x=>x.ticket.categoryId=cat.id);
+  return cat;
+}
+function slugName(raw){return String(raw||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9_-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'membre';}
+async function openTicket(i,value){
+  const g=i.guild,t=ticketType(value);
+  const mine=db.prepare("SELECT channel_id FROM tickets WHERE guild_id=? AND creator_id=? AND status='OPEN'").all(g.id,i.user.id).find(x=>g.channels.cache.has(x.channel_id));
+  if(mine)return i.reply({embeds:[embed(g.id,{title:'🎫 Ticket',description:`Tu as déjà un ticket ouvert : <#${mine.channel_id}>`})],flags:MessageFlags.Ephemeral});
+  if(!g.members.me?.permissions?.has(PermissionFlagsBits.ManageChannels))throw new Error('Il me manque « Gérer les salons » pour ouvrir un ticket.');
+  cooldown(`${g.id}:${i.user.id}:ticket`,20e3);
+  await i.deferReply({flags:MessageFlags.Ephemeral});
+  const cat=await ticketCategory(g);
+  const base=`${t.prefix}-${slugName(i.user.username)}`;
+  const name=g.channels.cache.some(c=>c.name===base)?`${base}-${Math.random().toString(36).slice(2,5)}`:base;
+  const {ids,ping}=ticketRoles(g,t.value);
+  const rw=[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles];
+  const ch=await g.channels.create({name,type:ChannelType.GuildText,parent:cat?.id,topic:`Ticket ouvert par ${i.user.id} | catégorie : ${t.value}`,permissionOverwrites:[{id:g.roles.everyone.id,deny:[PermissionFlagsBits.ViewChannel]},{id:i.user.id,allow:rw},{id:g.members.me.id,allow:[...rw,PermissionFlagsBits.ManageChannels]},...ids.map(id=>({id,allow:rw}))],reason:'DREAM ticket'});
+  db.prepare('INSERT INTO tickets(guild_id,channel_id,creator_id,status,created_at,type) VALUES(?,?,?,?,?,?)').run(g.id,ch.id,i.user.id,'OPEN',now(),t.value);
+  await ch.send({
+    content:[`${i.user}`,...(ping?ids.map(id=>`<@&${id}>`):[])].join(' '),
+    embeds:[embed(g.id,{title:'🎫 Ticket ouvert',description:`Bienvenue ${i.user}.\n\nExplique ta demande ici, le plus clairement possible.\nLe staff te répond dès qu’il passe.`,fields:[{name:`${t.emoji} Motif`,value:t.label,inline:true}],footer:'Ferme le ticket une fois réglé, tu recevras la conversation en MP.',timestamp:true})],
+    components:[row(btn('ticket:close','Fermer le ticket',ButtonStyle.Danger,'🔒'))],
+    allowedMentions:{users:[i.user.id],roles:ping?ids:[]}
+  });
+  await logTo(g,'ticket',{title:'🎫 Ticket ouvert',description:`**Ticket** : ${ch} \`#${ch.name}\`\n**Catégorie** : ${t.label}\n**Ouvert par** : ${i.user}`});
+  return i.editReply({embeds:[embed(g.id,{title:'🎫 Ticket',description:`✅ Ticket créé : ${ch}`})]});
+}
+async function ticketMessages(ch){
   const all=[];let before=null;
-  for(let i=0;i<10;i++){
+  for(let n=0;n<20;n++){
     const batch=await ch.messages.fetch({limit:100,...(before?{before}:{})}).catch(()=>null);
     if(!batch?.size)break;
     all.push(...batch.values());before=batch.last().id;
     if(batch.size<100)break;
   }
-  const lines=all.reverse().map(m=>`[${new Date(m.createdTimestamp).toLocaleString('fr-FR')}] ${m.author.tag}: ${m.content||(m.embeds.length?'[embed]':'')}${m.attachments.size?` (${m.attachments.size} fichier(s))`:''}`);
+  return all.reverse();
+}
+async function ticketTranscript(ch){
+  const lines=(await ticketMessages(ch)).map(m=>`[${new Date(m.createdTimestamp).toLocaleString('fr-FR')}] ${m.author.tag}: ${m.content||(m.embeds.length?'[embed]':'')}${m.attachments.size?` (${m.attachments.size} fichier(s))`:''}`);
   return lines.join('\n')||'Aucun message.';
+}
+const esc=t=>String(t??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function readable(text,g){
+  return String(text||'')
+    .replace(/<@!?(\d+)>/g,(_,id)=>`@${g.members.cache.get(id)?.displayName||g.client.users.cache.get(id)?.username||'membre'}`)
+    .replace(/<@&(\d+)>/g,(_,id)=>`@${g.roles.cache.get(id)?.name||'rôle'}`)
+    .replace(/<#(\d+)>/g,(_,id)=>`#${g.channels.cache.get(id)?.name||'salon'}`)
+    .replace(/<a?:(\w+):\d+>/g,':$1:');
+}
+const TRANSCRIPT_CSS=`:root{--neon:#7b5cff;--clair:#a68cff;--cyan:#46c8ff;--void:#07080d;--panneau:#0e1018;--bord:#241b4d;--texte:#e7e6f5;--doux:#9a97c0}*{box-sizing:border-box}body{margin:0;background:radial-gradient(1200px 600px at 50% -10%,#14122b 0%,var(--void) 60%) fixed;color:var(--texte);font-family:"gg sans","Segoe UI",system-ui,Arial,sans-serif}.wrap{max-width:860px;margin:0 auto;padding:24px 18px 64px}.entete{border:1px solid var(--bord);border-radius:16px;padding:20px 24px;background:linear-gradient(180deg,rgba(123,92,255,.10),rgba(123,92,255,0));box-shadow:0 0 40px rgba(123,92,255,.15);margin-bottom:20px}.titre{font-size:19px;font-weight:800;letter-spacing:.16em}.titre b{color:var(--clair)}.salon{margin-top:12px;font-size:15px;color:var(--clair);font-weight:700}.meta{margin-top:3px;font-size:12.5px;color:var(--doux)}.msg{display:flex;gap:12px;padding:11px 10px;border-radius:12px}.msg:hover{background:rgba(123,92,255,.05)}.avatar{width:40px;height:40px;border-radius:50%;flex:0 0 auto;border:1px solid var(--bord);object-fit:cover}.corps{min-width:0;flex:1}.tete{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}.auteur{font-weight:700;color:#fff}.bot{font-size:10px;font-weight:800;background:var(--neon);color:#fff;padding:1px 5px;border-radius:4px}.heure{font-size:11.5px;color:var(--doux)}.texte{margin-top:3px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45}.texte a{color:var(--cyan);text-decoration:none}.embed{margin-top:6px;border-left:3px solid var(--neon);background:var(--panneau);border-radius:6px;padding:8px 12px;white-space:pre-wrap}.pjs{margin-top:6px;display:flex;flex-wrap:wrap;gap:8px}.pjs img{max-width:260px;max-height:220px;border-radius:10px;border:1px solid var(--bord)}.pjs a.f{padding:8px 12px;border:1px solid var(--bord);border-left:3px solid var(--neon);border-radius:8px;color:var(--clair);text-decoration:none;font-size:13px;background:var(--panneau)}.vide{text-align:center;color:var(--doux);padding:48px 0}`;
+function transcriptHtml(ch,msgs){
+  const g=ch.guild;
+  const body=msgs.length?msgs.map(m=>{
+    const text=m.content?`<div class="texte">${esc(readable(m.content,g)).replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank" rel="noopener">$1</a>')}</div>`:'';
+    const embeds=m.embeds.map(e=>`<div class="embed">${e.title?`<b>${esc(readable(e.title,g))}</b>\n`:''}${esc(readable(e.description,g))}</div>`).join('');
+    const files=[...m.attachments.values()].map(a=>/\.(png|jpe?g|gif|webp)$/i.test(a.name||'')?`<a href="${esc(a.url)}" target="_blank"><img src="${esc(a.url)}" alt=""/></a>`:`<a class="f" href="${esc(a.url)}" target="_blank">${esc(a.name||'fichier')}</a>`).join('');
+    return `<div class="msg"><img class="avatar" src="${esc(m.author.displayAvatarURL({size:64}))}" alt=""/><div class="corps"><div class="tete"><span class="auteur">${esc(m.member?.displayName||m.author.username)}</span>${m.author.bot?'<span class="bot">BOT</span>':''}<span class="heure">${new Date(m.createdTimestamp).toLocaleString('fr-FR')}</span></div>${text}${embeds}${files?`<div class="pjs">${files}</div>`:''}</div></div>`;
+  }).join('\n'):'<div class="vide">Aucun message.</div>';
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Transcript — ${esc(ch.name)}</title><style>${TRANSCRIPT_CSS}</style></head><body><div class="wrap"><div class="entete"><div class="titre">🌙 <b>DREAM</b></div><div class="salon"># ${esc(ch.name)}</div><div class="meta">${msgs.length} message${msgs.length>1?'s':''} · transcript généré le ${new Date().toLocaleString('fr-FR')}</div></div>${body}</div></body></html>`;
 }
 async function closeTicket(i,reason='—'){
   const t=db.prepare('SELECT * FROM tickets WHERE guild_id=? AND channel_id=? AND status=?').get(i.guildId,i.channelId,'OPEN');
   if(!t)throw new Error("Ce salon n'est pas un ticket ouvert.");
   if(t.creator_id!==i.user.id)requireAccess(i.guildId,i.user.id,'ticket-close',40,'WLTICKET');
-  const text=await ticketTranscript(i.channel);
+  await i.deferReply();
+  const ch=i.channel,g=i.guild,type=ticketType(t.type);
+  const msgs=await ticketMessages(ch);
+  const text=msgs.map(m=>`[${new Date(m.createdTimestamp).toLocaleString('fr-FR')}] ${m.author.tag}: ${m.content||(m.embeds.length?'[embed]':'')}`).join('\n')||'Aucun message.';
+  const html=transcriptHtml(ch,msgs);
   db.prepare('UPDATE tickets SET status=?,closed_at=?,staff_id=?,reason=?,transcript=? WHERE id=?').run('CLOSED',now(),i.user.id,reason,text.slice(0,200000),t.id);
-  const typeLabel=(cfg(i.guildId).ticket.types.find(x=>x[0]===t.type)||[t.type||'autre','Autre'])[1];
-  const file=new AttachmentBuilder(Buffer.from(text,'utf8'),{name:`ticket-${t.id}.txt`});
+  const file=()=>new AttachmentBuilder(Buffer.from(html,'utf8'),{name:`transcript-${ch.name}.html`});
   const fields=[
-    {name:'Ticket',value:`#${t.id}`,inline:true},
-    {name:'Catégorie',value:typeLabel,inline:true},
-    {name:'Utilisateur',value:`<@${t.creator_id}>`,inline:true},
-    {name:'Staff',value:`<@${i.user.id}>`,inline:true},
-    {name:'Ouvert le',value:new Date(t.created_at).toLocaleString('fr-FR'),inline:true},
-    {name:'Motif',value:String(reason).slice(0,1000),inline:false}
+    {name:'⭐ Ouvert par',value:`<@${t.creator_id}>`,inline:true},
+    {name:'🛡️ Fermé par',value:`<@${i.user.id}>`,inline:true},
+    {name:`${type.emoji} Motif`,value:type.label,inline:true},
+    {name:'📝 Raison',value:String(reason).slice(0,1000),inline:false},
+    {name:'📅 Ouvert le',value:`<t:${Math.floor(t.created_at/1000)}:f>`,inline:true},
+    {name:'🎫 Ticket',value:`#${t.id}`,inline:true}
   ];
-  const ch=logChannel(i.guild,'ticket');
-  if(ch)await ch.send({embeds:[embed(i.guildId,{title:'🎫 Ticket fermé',description:`Salon <#${i.channelId}>`,fields})],files:[file],allowedMentions:{parse:[]}}).catch(()=>{});
-  const mirror=mirrorChannel(i.guild,'ticket');
-  if(mirror&&mirror.id!==ch?.id)await mirror.send({embeds:[embed(i.guildId,{title:'🎫 Ticket fermé',description:`Salon <#${i.channelId}>`,fields})],allowedMentions:{parse:[]}}).catch(()=>{});
+  const e=embed(i.guildId,{author:'Ticket fermé',title:`🎫 #${ch.name}`,description:`${msgs.length} message${msgs.length>1?'s':''} · transcript en pièce jointe`,fields,timestamp:true});
+  const logCh=logChannel(g,'ticket');
+  if(logCh)await logCh.send({embeds:[e],files:[file()],allowedMentions:{parse:[]}}).catch(()=>{});
+  const mirror=mirrorChannel(g,'ticket');
+  if(mirror&&mirror.id!==logCh?.id)await mirror.send({embeds:[e],allowedMentions:{parse:[]}}).catch(()=>{});
+  const creator=await i.client.users.fetch(t.creator_id).catch(()=>null);
+  if(creator)await creator.send({embeds:[embed(i.guildId,{title:'🎫 Ton ticket est fermé',description:'Toute la conversation est dans le fichier joint, garde-le si tu en as besoin.',fields:[{name:'Motif',value:type.label,inline:true},{name:'Salon',value:`\`${ch.name}\``,inline:true},{name:'Raison',value:String(reason).slice(0,1000),inline:false}],footer:`${g.name} · transcript du ticket`,timestamp:true})],files:[file()]}).catch(()=>{});
   audit(i.guildId,i.user.id,'ticket.close',String(t.id),{reason});
-  await i.channel.permissionOverwrites.edit(t.creator_id,{SendMessages:false},'DREAM ticket fermé').catch(()=>{});
+  await i.editReply({embeds:[embed(i.guildId,{title:'🎫 Ticket',description:'🔒 Ticket fermé. Le salon disparaît dans quelques secondes.'})]}).catch(()=>{});
+  setTimeout(()=>ch.delete('DREAM ticket fermé').catch(()=>{}),5000);
   return t;
 }
 
@@ -2242,7 +2377,7 @@ const CMD_DEFAULT_LEVEL={
   '&clear':40,'+badword':40,'/add':40,'/del':40,'=giveaway':40,'/giveaway':40,
   '+lock':50,'+unlock':50,'/protect':50,'/wet':50,'/wet-info':50,'/logs':50,'/payment':50,'message':50,
   '&bl':80,'&unbl':80,'&blinfo':80,'/wl':80,'/dog-add':80,'/dog-del':80,
-  '=logs':80,'=tableaux':80,'=reglement':80,'=panneau':80,'=couleur':80,'=mirror':80,
+  '=logs':80,'=stats':80,'=ticket':80,'=tableaux':80,'=reglement':80,'=panneau':80,'=couleur':80,'=mirror':80,
   '&lockall':90,'&unlockall':90,'=urgence':90,'+massiveroleadd':90,'=hierarchie':90,'=droits':90,'=setup':90,'/configuration':90,
   'dream':0,'help':0,'profil':0,'music':0,'stats':0,'ticket':0,'role':0,'prix':0,'giveaways':0,'role-acces':20,
   'addrole':20,'delrole':20,'ticket-close':40,'ui':50,'logs':50,'payment':50,'wl':50,
@@ -2310,12 +2445,12 @@ function wetList(gid,actorId){
 }
 
 // Commandes supplémentaires
-const EXTRA_PROTECT=/^(?:=logs|=tableaux|=hierarchie|=urgence|=mirror|=couleur|=reglement|=panneau|=default|&clear|&lockall|&unlockall|&bl|&unbl|&derank|\+unban|\+badword|\+massiveroleadd|\/protect|\/wl|\/payment|\/add|\/del|\/wet|\/wet-info|=droits|=setup)(?:\s|$)/i;
+const EXTRA_PROTECT=/^(?:=logs|=stats|=tableaux|=hierarchie|=urgence|=mirror|=couleur|=reglement|=panneau|=default|&clear|&lockall|&unlockall|&bl|&unbl|&derank|\+unban|\+badword|\+massiveroleadd|\/protect|\/wl|\/payment|\/add|\/del|\/wet|\/wet-info|=droits|=setup)(?:\s|$)/i;
 async function extraPrefix(m){
   const t=m.content.trim(),gid=m.guild.id,uid=m.author.id;
   if(!/^[=+&\-/]/.test(t))return false;
   const {cmd,args,rest}=argsOf(t);
-  const known=new Set(['=help','/help','=logs','=tableaux','=hierarchie','=urgence','=mirror','=couleur','=reglement','=panneau','=default','=giveaway','=smash','&clear','&lockall','&unlockall','&bl','&unbl','&derank','+unban','+badword','+massiveroleadd','/protect','/profil','/explain','/contrib','/perm','/acces','/abo','/logs','/add','/del','/payment','/wl','/wet','/wet-info','=droits','=setup']);
+  const known=new Set(['=help','/help','=ticket','=logs','=stats','=tableaux','=hierarchie','=urgence','=mirror','=couleur','=reglement','=panneau','=default','=giveaway','=smash','&clear','&lockall','&unlockall','&bl','&unbl','&derank','+unban','+badword','+massiveroleadd','/protect','/profil','/explain','/contrib','/perm','/acces','/abo','/logs','/add','/del','/payment','/wl','/wet','/wet-info','=droits','=setup']);
   if(!known.has(cmd))return false;
   if(EXTRA_PROTECT.test(t)&&m.client!==clients.two)return true;
   if(!EXTRA_PROTECT.test(t)&&m.client!==clients.one&&clients.one.guilds.cache.has(gid))return true;
@@ -2326,20 +2461,24 @@ async function extraPrefix(m){
 
   if(cmd==='=logs'){
     requireCmd(gid,uid,'=logs');
-    const r=await ensureLogTree(g);
-    await logTo(g,'sante',{title:'🗂️ Logs vérifiés',description:kv([['Créés',r.created],['Conservés',r.kept]]),actor:uid});
-    scheduleTables(g);
-    const present=[...LOG_NAMES.keys()].filter(k=>logChannel(g,k)).length;
-    return !!await reply({embeds:[embedFor(gid,uid,{
-      title:'🗂️ Logs prêts',
-      description:`${bar(present,LOG_NAMES.size,12)} **${present}/${LOG_NAMES.size}** salons\n\n${kv([['Créés',r.created],['Déjà en place',r.kept]])}`,
-      fields:LOG_TREE.map(([cat,chans])=>({name:cat,value:chans.map(([k,n])=>`${logChannel(g,k)?'🟢':'🔴'} ${n}`).join('\n'),inline:true})),
-      timestamp:true
-    })]});
+    return !!await reply(await logsPicker(gid,uid));
+  }
+  if(cmd==='=ticket'){
+    requireCmd(gid,uid,'=ticket');
+    const msg=await m.channel.send(ticketPanel(gid));
+    db.prepare('INSERT INTO panels(guild_id,key,channel_id,message_id,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(guild_id,key) DO UPDATE SET channel_id=excluded.channel_id,message_id=excluded.message_id,updated_at=excluded.updated_at').run(gid,'ticket',m.channelId,msg.id,now());
+    await m.delete().catch(()=>{});
+    return !!await m.channel.send({embeds:[embedFor(gid,uid,{title:'🎫 Ticket',description:'Panneau posé. Tu peux régler qui voit quel motif.'})],components:[row(btn('troles:pick','Qui voit quoi'))]}).then(x=>setTimeout(()=>x.delete().catch(()=>{}),60e3));
+  }
+  if(cmd==='=stats'){
+    requireCmd(gid,uid,'=stats');
+    if(/^(off|non|retirer)$/i.test(args[0]||'')){await removeStats(g);return !!await reply('📊 Salons de stats retirés.');}
+    setCfg(gid,x=>x.stats.voice=true);await updateStats(g);
+    return !!await reply('📊 Les salons de stats sont en haut du serveur. Ils se mettent à jour tout seuls.\n`=stats off` pour les retirer.');
   }
   if(cmd==='=tableaux'){
     requireCmd(gid,uid,'=tableaux');
-    const n=await refreshTables(g);
+    const n=await refreshTables(g,true);
     const ch=db.prepare("SELECT channel_id FROM panels WHERE guild_id=? AND key='__channel'").get(gid)?.channel_id;
     return !!await reply({embeds:[embedFor(gid,uid,{
       title:'📊 Tableaux à jour',
@@ -2383,16 +2522,16 @@ async function extraPrefix(m){
     return true;
   }
   if(cmd==='=hierarchie'){
-    const open=o=>reply({embeds:[embedFor(gid,uid,{title:'📚 Hiérarchie',description:ladderText(gid,g),footer:`Niveaux ${TIER_MIN} à ${TIER_MAX} pour les rôles · au-dessus = accès internes`})],components:allowCmd(gid,uid,'=hierarchie')?ladderPanel(gid):[]});
+    const open=o=>reply({embeds:[embedFor(gid,uid,{title:'📚 Hiérarchie',description:ladderText(gid,g),footer:'L’ordre suit celui des rôles Discord.'})],components:allowCmd(gid,uid,'=hierarchie')?ladderPanel(gid):[]});
     if(!args.length)return !!await open();
     requireCmd(gid,uid,'=hierarchie');
     const sub=args[0].toLowerCase();
     if(sub==='ajouter'){
       const role=g.roles.cache.get(cleanId(args[1]||''));
       if(!role)throw new Error('Indique un rôle.');
-      setTier(gid,role,args[2],uid);
-      audit(gid,uid,'tier.set',role.id,{level:Number(args[2])});
-      await logTo(g,'perm',{title:'📚 Niveau attribué',description:`${role} → **${Number(args[2])}**`,actor:uid});
+      addTier(gid,role,uid);
+      audit(gid,uid,'tier.set',role.id,{});
+      await logTo(g,'perm',{title:'📚 Hiérarchie',description:`${role} ajouté au staff.`,actor:uid});
       scheduleTables(g);
       return !!await open();
     }
@@ -2400,7 +2539,7 @@ async function extraPrefix(m){
       const roleId=cleanId(args[1]||'');
       const old=delTier(gid,roleId,uid);
       audit(gid,uid,'tier.del',roleId,{level:old.level});
-      await logTo(g,'perm',{title:'📚 Niveau retiré',description:`<@&${roleId}> n'a plus de niveau.`,actor:uid});
+      await logTo(g,'perm',{title:'📚 Hiérarchie',description:`<@&${roleId}> retiré du staff.`,actor:uid});
       scheduleTables(g);
       return !!await open();
     }
@@ -2829,7 +2968,7 @@ async function extraSlash(i){
   }
   if(n==='hierarchie'){
     const rows=hierarchyRows(gid);
-    return !!await send({embeds:[embedFor(gid,uid,{title:'📚 Hiérarchie',description:rows.map(x=>`**${x.level}** · ${x.name}${x.role_id?` → <@&${x.role_id}>`:''}`).join('\n')||'Vide.',footer:'=hierarchie lier <nom> <@rôle>'})]});
+    return !!await send({embeds:[embedFor(gid,uid,{title:'📚 Hiérarchie',description:ladderText(gid),footer:'L’ordre suit celui des rôles Discord.'})]});
   }
   return false;
 }
@@ -2838,10 +2977,24 @@ async function extraSlash(i){
 async function extraComponent(i){
   const gid=i.guildId,uid=i.user.id,g=i.guild;
   const [scope,action,extra]=i.customId.split(':');
+  if(scope==='logs'&&action==='home'){
+    requireCmd(gid,uid,'=logs');
+    const home=clients.two.guilds.cache.get(i.values[0]);
+    if(!home)throw new Error('Serveur introuvable.');
+    const m=await home.members.fetch(uid).catch(()=>null);
+    if(!globalOwner(uid)&&home.ownerId!==uid&&!m?.permissions?.has(PermissionFlagsBits.ManageGuild))throw new Error('Il te faut « Gérer le serveur » là-bas.');
+    await i.deferUpdate();
+    const r=await ensureLogTree(home);
+    setCfg(gid,x=>x.logGuild=home.id);
+    if(!cfg(home.id).logGuild)setCfg(home.id,x=>x.logGuild=home.id);
+    audit(gid,uid,'logs.home',home.id,{created:r.created});
+    await logTo(g,'sante',{title:'🗂️ Logs branchés',description:`Les logs de **${g.name}** arrivent ici.`,actor:uid});
+    return !!await i.editReply({embeds:[embedFor(gid,uid,{title:'🗂️ Logs prêts',description:`Tout part sur **${home.name}**.\n${kv([['Salons créés',r.created],['Déjà là',r.kept]])}`})],components:[]});
+  }
   if(scope==='setup'){
     if(action==='help')return !!await i.reply({embeds:[helpEmbed(gid,uid)],flags:MessageFlags.Ephemeral});
     requireCmd(gid,uid,'=setup');
-    if(action==='tiers')return !!await i.reply({embeds:[embedFor(gid,uid,{title:'📚 Hiérarchie',description:ladderText(gid,g),footer:`Niveaux ${TIER_MIN} à ${TIER_MAX} pour les rôles · au-dessus = accès internes`})],components:ladderPanel(gid),flags:MessageFlags.Ephemeral});
+    if(action==='tiers')return !!await i.reply({embeds:[embedFor(gid,uid,{title:'📚 Hiérarchie',description:ladderText(gid,g),footer:'L’ordre suit celui des rôles Discord.'})],components:ladderPanel(gid),flags:MessageFlags.Ephemeral});
     if(action==='run'){
       cooldown(`${gid}:setup`,60e3);
       await i.deferReply({flags:MessageFlags.Ephemeral});
@@ -2852,38 +3005,30 @@ async function extraComponent(i){
   }
   if(scope==='tier'){
     requireCmd(gid,uid,'=hierarchie');
-    const show=()=>({embeds:[embedFor(gid,uid,{title:'📚 Hiérarchie',description:ladderText(gid,g),footer:`Niveaux ${TIER_MIN} à ${TIER_MAX} pour les rôles · au-dessus = accès internes`})],components:ladderPanel(gid)});
+    const show=()=>({embeds:[embedFor(gid,uid,{title:'📚 Hiérarchie',description:ladderText(gid,g),footer:'L’ordre suit celui des rôles Discord.'})],components:ladderPanel(gid)});
     if(action==='refresh')return !!await i.update(show());
     if(action==='add'){
-      const roleId=i.values[0];
-      const role=g.roles.cache.get(roleId);
-      if(!role)throw new Error('Rôle introuvable.');
-      const current=tierOf(gid,roleId);
-      return !!await i.showModal(modal(`tier:level:${roleId}`,`Niveau de ${role.name}`.slice(0,45),[{id:'level',label:`Niveau entre ${TIER_MIN} et ${TIER_MAX}`,value:String(current?.level||'')}]));
-    }
-    if(action==='level'){
-      const role=g.roles.cache.get(extra);
-      setTier(gid,role,i.fields.getTextInputValue('level'),uid);
-      audit(gid,uid,'tier.set',extra,{level:Number(i.fields.getTextInputValue('level'))});
-      await logTo(g,'perm',{title:'📚 Niveau attribué',description:`<@&${extra}> → **${Number(i.fields.getTextInputValue('level'))}**`,actor:uid});
+      const role=g.roles.cache.get(i.values[0]);
+      addTier(gid,role,uid);
+      audit(gid,uid,'tier.set',role.id,{});
+      await logTo(g,'perm',{title:'📚 Hiérarchie',description:`${role} ajouté au staff.`,actor:uid});
       scheduleTables(g);
-      return !!await i.reply({...show(),flags:MessageFlags.Ephemeral});
+      return !!await i.update(show());
     }
     if(action==='remove'){
-      const rows=tierRows(gid);
-      if(!rows.length)throw new Error('Aucun rôle ne porte de niveau.');
-      return !!await i.reply({content:'Choisis le rôle à retirer.',components:[row(sel('tier:drop','Retirer un niveau',rows.slice(0,25).map(x=>({label:`${x.name} · ${x.level}`.slice(0,100),value:x.role_id}))))],flags:MessageFlags.Ephemeral});
+      if(!staffRows(gid).length)throw new Error('Aucun rôle dans la hiérarchie.');
+      return !!await i.reply({content:'Choisis le rôle à retirer.',components:[row(sel('tier:drop','Retirer un rôle',staffRows(gid).slice(0,25).map(x=>({label:x.name.slice(0,100),value:x.role_id}))))],flags:MessageFlags.Ephemeral});
     }
     if(action==='drop'){
       const old=delTier(gid,i.values[0],uid);
       audit(gid,uid,'tier.del',i.values[0],{level:old.level});
-      await logTo(g,'perm',{title:'📚 Niveau retiré',description:`<@&${i.values[0]}> n'a plus de niveau.`,actor:uid});
+      await logTo(g,'perm',{title:'📚 Hiérarchie',description:`<@&${i.values[0]}> retiré du staff.`,actor:uid});
       scheduleTables(g);
-      return !!await i.update({content:'✅ Niveau retiré.',components:[]});
+      return !!await i.update({content:'✅ Rôle retiré.',components:[]});
     }
     if(action==='system'){
       const rows=systemRows(gid);
-      return !!await i.reply({embeds:[embedFor(gid,uid,{title:'🔒 Accès internes',description:rows.map(x=>`**${x.name}** · ${x.level} · ${x.role_id?`<@&${x.role_id}>`:'aucun rôle'}`).join('\n'),footer:'=hierarchie interne OWNER <@rôle> · off pour délier'})],flags:MessageFlags.Ephemeral});
+      return !!await i.reply({embeds:[embedFor(gid,uid,{title:'🔒 Accès internes',description:rows.map(x=>`🔒 **${x.name}** · ${x.role_id?`<@&${x.role_id}>`:'aucun rôle'}`).join('\n'),footer:'=hierarchie interne OWNER <@rôle> · off pour délier'})],flags:MessageFlags.Ephemeral});
     }
   }
   if(scope==='droits'){
@@ -2978,13 +3123,20 @@ async function extraComponent(i){
       {id:'label',label:'Libellé',value:'Paiement'}
     ]));
   }
+  if(scope==='ticket'&&action==='open')return !!await openTicket(i,extra);
+  if(scope==='troles'){
+    requireCmd(gid,uid,'=ticket');
+    if(action==='pick')return !!await i.reply({embeds:[embedFor(gid,uid,{title:'🔑 Qui voit les tickets',description:TICKET_TYPES.map(t=>{const {ids,ping}=ticketRoles(g,t.value);return `${t.emoji} **${t.label}** · ${ids.length?ids.map(r=>`<@&${r}>`).join(' '):'_staff_'}${ping?'':' -# par défaut'}`;}).join('\n'),footer:'Les rôles choisis voient le ticket et sont mentionnés à l’ouverture.'})],components:[row(sel('troles:type','Motif à régler',TICKET_TYPES.map(t=>({label:t.label,value:t.value,emoji:t.emoji}))))],flags:MessageFlags.Ephemeral});
+    if(action==='type'){const t=ticketType(i.values[0]);return !!await i.update({embeds:[embedFor(gid,uid,{title:`${t.emoji} ${t.label}`,description:'Choisis les rôles qui voient ce motif.\nNe rien choisir remet le réglage par défaut.'})],components:[row(new RoleSelectMenuBuilder().setCustomId(`troles:set:${t.value}`).setPlaceholder('Rôles du motif').setMinValues(0).setMaxValues(10))]});}
+    if(action==='set'){const t=ticketType(extra);setCfg(gid,x=>{x.ticket.roles={...(x.ticket.roles||{}),[t.value]:i.values};});audit(gid,uid,'ticket.roles',t.value,{roles:i.values});return !!await i.update({embeds:[embedFor(gid,uid,{title:`✅ ${t.label} enregistré`,description:i.values.length?i.values.map(r=>`<@&${r}>`).join(' '):'Retour au réglage par défaut : le staff.'})],components:[]});}
+  }
   if(scope==='ticket'&&action==='close'){
     return !!await i.showModal(modal('tclose:go','Fermer le ticket',[{id:'reason',label:'Motif',style:TextInputStyle.Paragraph,required:false}]));
   }
   if(scope==='tclose'){
     const reason=i.fields.getTextInputValue('reason')||'—';
     await closeTicket(i,reason);
-    return !!await i.reply({content:'🔒 Ticket fermé, transcript envoyé.',flags:MessageFlags.Ephemeral});
+    return true;
   }
   if(i.isModalSubmit()&&i.customId==='gw:create'){
     requireCmd(gid,uid,'=giveaway');
@@ -3099,7 +3251,7 @@ for(const c of [clients.one,clients.two]){
 clients.two.on('guildMemberAdd',async m=>{await protectMemberRoles(m.guild,m);});
 clients.two.on('guildMemberUpdate',async(o,n)=>{if(n.guild&&cfg(n.guild.id).roles.protect)await protectMemberRoles(n.guild,n);});
 clients.two.on('roleCreate',r=>{if(r.guild) scheduleInstantRefresh(r.guild,'roleCreate');});
-clients.two.on('roleUpdate',(o,n)=>{if(n.guild && (o.name!==n.name||o.position!==n.position||o.permissions.bitfield!==n.permissions.bitfield)) scheduleInstantRefresh(n.guild,'roleUpdate');});
+clients.two.on('roleUpdate',(o,n)=>{if(!n.guild)return;if(o.position!==n.position||o.name!==n.name)syncTierOrder(n.guild.id);if(o.name!==n.name||o.position!==n.position||o.permissions.bitfield!==n.permissions.bitfield) scheduleInstantRefresh(n.guild,'roleUpdate');});
 clients.two.on('roleDelete',r=>{if(r.guild) scheduleInstantRefresh(r.guild,'roleDelete');});
 for(const c of [clients.one,clients.two]){
   c.on('guildMemberAdd',m=>scheduleInstantRefresh(m.guild,'memberAdd'));
@@ -3129,6 +3281,9 @@ clients.two.on('voiceStateUpdate',async(o,n)=>{
   n.disconnect('DREAM PV').catch(()=>{});
 });
 
+every(5*60*1000,async()=>{
+  for(const g of clients.two.guilds.cache.values())if(cfg(g.id).stats.voice)await updateStats(g).catch(()=>{});
+});
 every(30*60*1000,async()=>{
   for(const g of clients.two.guilds.cache.values())try{await refreshGuild(g);}catch{}
 });
@@ -3283,5 +3438,6 @@ export const internals={
   slash,EXTRA_SLASH,PROTECT_CMDS,globalOwner,
   cooldown,rateLimit,audit,emergencyOn,stopTimers,memberCard,ensureCommandConfig,canUse,CMD_GROUPS,wetList,extraPrefix,extraSlash,extraComponent,
   runSetup,setupEmbed,bar,kv,money,clip,sel,embed,cfgCache,transaction,pruneHistory,protectRoles,welcomePanel,bullets,when,
-  safeUrl,imageUrl,cleanId,levelOptions,COMMAND_CATALOG,COMMAND_LABEL,commandCfg
+  safeUrl,imageUrl,cleanId,levelOptions,COMMAND_CATALOG,COMMAND_LABEL,commandCfg,
+  addTier,syncTierOrder,staffRows,logChannel,TICKET_TYPES,slugName,ticketPanel,statName
 };

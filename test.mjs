@@ -291,6 +291,28 @@ ok('catalogue couvre les nouveautes', ['help', 'profil', 'setup', 'protect', 'gi
 ok('config de commande creee', !!I.commandCfg(G, 'help'));
 ok('aide et droits alignes', I.CMD_ACCESS.every(e => I.allowCmd(G, 'owner1', e[0])));
 
+// Ordre Discord
+allows('ajout sans chiffre', () => { I.addTier(G, roles.get('rAutre')); I.addTier(G, roles.get('rStaff')); });
+I.syncTierOrder(G);
+ok('ordre suit les roles Discord', (() => { const o = I.staffRows(G).map(x => roles.get(x.role_id)?.position ?? -1); return o.every((v, n) => n === 0 || o[n - 1] >= v); })());
+roles.get('rStaff').position = 50; I.syncTierOrder(G);
+ok('deplacement Discord suivi', I.staffRows(G)[0].role_id === 'rStaff');
+roles.get('rStaff').position = 2; I.syncTierOrder(G);
+ok('echelle sans niveau', !/niveau/i.test(I.ladderText(G)));
+throws('role de bot refuse dans la hierarchie', () => I.addTier(G, { id: 'rBot2', name: 'bot', managed: true }));
+
+// Rien d automatique
+ok('stats coupees par defaut', I.cfg('autre-guild').stats.voice === false);
+ok('aucun serveur de logs par defaut', I.cfg('autre-guild').logGuild === null);
+ok('pas de log sans serveur choisi', I.logChannel({ id: 'autre-guild' }, 'ban') === null);
+ok('nom de stat', I.statName(['membres', '👥', 'Membres'], { membres: 12 }) === '👥 · Membres : 12');
+ok('stat lien', I.statName(['lien', '🔗', null], { lien: '.gg/dream' }) === '🔗 · .gg/dream');
+
+// Tickets
+ok('motifs de ticket', I.TICKET_TYPES.map(t => t.label).join() === 'Sanction,Contribution,Bataillon Confirmé,Autre');
+ok('nom de ticket propre', I.slugName('Élodie ✨ 42') === 'elodie-42');
+ok('un bouton par motif', I.ticketPanel(G).components[0].components.length === I.TICKET_TYPES.length);
+
 I.stopTimers();
 try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
 
