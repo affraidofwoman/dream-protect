@@ -5,7 +5,5 @@ data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
 data/backups/
-cookies/*.cookie
-cookies/*.txt
 node_modules/
 *.log
