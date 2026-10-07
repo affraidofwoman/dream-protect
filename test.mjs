@@ -408,6 +408,38 @@ const text = (p) => JSON.stringify(p?.embeds?.map((e) => e.toJSON?.() ?? e) ?? [
   ok('sanction enregistrée', base.db.prepare("SELECT COUNT(*) AS n FROM sanctions WHERE type='BAN' AND target_id=?").get(id(10)).n === 1);
 }
 
+// Nouveautés airline
+{
+  const UI = await import('./lib/ui.js');
+  const names2 = K.COMMANDS.map((d) => d.name);
+  ok(
+    'commandes vocales airline',
+    ['=all', '=pvlist', '=mv', '=join', '=vmall', '=wlmv', '=follow', '=menotte', '=mp'].every((n) => names2.includes(n)),
+  );
+  ok(
+    'outils airline',
+    ['/invite', '.membre', '/say', '=raid', '/refresh'].every((n) => names2.includes(n)),
+  );
+  ok('vocaux réservés aux OWNER', !D.allowed(G, id(50), '=mv') && D.allowed(G, id(20), '=mv'));
+  const page = UI.pager(
+    { gid: G, user: { id: id(50) } },
+    { title: 'Liste', lines: Array.from({ length: 40 }, (_, n) => `ligne ${n}`), per: 15 },
+  );
+  const nav = page.components[0].toJSON().components;
+  ok('pages : trois pages', page.embeds[0].toJSON().footer.text.includes('1/3'));
+  ok('pages : précédent grisé au début', nav[1].disabled === true && nav[2].disabled === false);
+  const token = nav[2].custom_id.split(':')[1];
+  ok('pages : dernière page', UI.pageOf(token, 5).embeds[0].toJSON().footer.text.includes('3/3'));
+  ok('pages : appartient à son auteur', UI.pagerUser(token) === id(50));
+  ok('couleur nommée', UI.colorValue('rose') === 0xec4899 && UI.colorValue('#112233') === 0x112233 && UI.colorValue('') === null);
+  ok(
+    'ticket nouveau style',
+    C.ticketPanelV2(G)
+      .components[0].toJSON()
+      .components.filter((x) => x.type === 9).length === 4,
+  );
+}
+
 // Tableaux
 R.setRegistry(K.COMMANDS);
 ok('neuf tableaux', R.TABLES.length === 9);

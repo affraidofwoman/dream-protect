@@ -46,24 +46,27 @@ Règle d’or : personne n’agit sur quelqu’un de son rang ou au-dessus, ni s
 | Groupe | Commandes | Ouvert par défaut à |
 |---|---|---|
 | Pour tout le monde | `/help` `/profil` `+pic` `+banner` `/explain` `/contrib` `/perm` `/acces` `/abo` `=smash` | tous |
-| Fiche membre | `=ui` | tout le staff |
+| Fiche membre | `=ui` `/invite` `.membre` | tout le staff |
 | Bannir | `+ban` `+unban` `-baninfo` `+unbanall` | OWNER |
 | Derank | `&derank` | OWNER |
 | Salons et WET | `&lock` `&unlock` `/wet` `/wet-info` | OWNER |
-| Owner | `=pv` `=acces` `&bl` `&unbl` `&blinfo` `/dog-add` `/dog-del` | OWNER |
+| Owner | `&bl` `&unbl` `&blinfo` `/dog-add` `/dog-del` | OWNER |
+| Vocaux | `=pv` `=acces` `=all` `=pvlist` `=mv` `=join` `=vmall` `=wlmv` `=follow` `=menotte` `=mp` | OWNER |
 | Rôles | `/addrole` `/delrole` | OWNER |
 | Rôle en masse | `+massiveroleadd` | SYS |
-| Contenu | `&clear` `+badword` `/protect` `=ticket` `=reglement` `=panneau` `/giveaway` | OWNER |
+| Contenu | `&clear` `+badword` `/protect` `=ticket` `=reglement` `=panneau` `/giveaway` `/say` | OWNER |
 | Argent | `/add` `/del` `/logs` `/payment` `=default` `=prix` | OWNER |
-| Configuration | `/wl` `=hierarchie` `=droits` `=logs` `=tableaux` `=stats` `=couleur` `=bienvenue` `=vocal` `&l0all` `=urgence` | SYS |
+| Configuration | `/wl` `=hierarchie` `=droits` `=logs` `=tableaux` `=stats` `=couleur` `=bienvenue` `=vocal` `=raid` `/refresh` `&l0all` `=urgence` | SYS |
 
 Les anciens préfixes restent acceptés : `+lock`, `+unlock`, `&lockall`.
+Une commande préfixée lancée sans les droits est ignorée en silence, comme sur airline.
 
 ## Ce qui tourne tout seul
 
 - Contrôle toutes les 12 minutes : rôles staff, verrous, bannis qui reviennent, laisses, logs, tableaux, stats.
 - Anti-escalade : un rôle sensible donné par quelqu’un qui n’en a pas le droit est retiré.
 - Suppressions de rôles ou de salons en série : verrouillage d’urgence automatique.
+- Anti-raid : alerte sur les arrivées en masse, vérification « Élevé » le temps de la salve (`=raid`).
 - Un log supprimé est remis aussitôt.
 - Sauvegarde de la base toutes les 30 minutes (les 10 dernières sont gardées dans `data/backups`), une copie par jour dans `backup-log`.
 

@@ -11,11 +11,12 @@
 | `lib/droits.js` | Rangs, hiérarchie du staff, groupes de droits, vérifications avant chaque action |
 | `lib/logs.js` | Salons de logs, serveur choisi, double log, logs protégés, MP de sanction, transcripts |
 | `lib/moderation.js` | Bans, blacklist, wet, derank, verrous, clear, mots interdits, salons réservés, rôle en masse, laisse, urgence |
-| `lib/communaute.js` | Tickets, bienvenue, règlement, panneaux de rôles, vocaux, giveaways, smash or pass, stats, fiches |
+| `lib/communaute.js` | Tickets (classique et V2), bienvenue, règlement, panneaux de rôles, giveaways, smash or pass, stats, fiches, `/invite`, `.membre`, `/say` |
+| `lib/vocal.js` | Vocaux privés et temporaires, accès, déplacements, suivi, menottes, MP |
 | `lib/economie.js` | Prix, paiements, contributions, abonnements, chercheur |
 | `lib/reglages.js` | Hiérarchie, droits, rangs, logs, couleurs, tableaux permanents |
 | `lib/commandes.js` | Registre unique des commandes, routeur, aide, erreurs lisibles |
-| `lib/surveillance.js` | Événements, anti-escalade, réparations, contrôle régulier, sauvegardes |
+| `lib/surveillance.js` | Événements, anti-escalade, anti-raid, réparations, contrôle régulier, sauvegardes, `/refresh` |
 
 ## Failles corrigées par rapport à l’ancienne version
 

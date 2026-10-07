@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { REST, Routes } from 'discord.js';
+import { ActivityType, REST, Routes } from 'discord.js';
 import { db, stopTimers } from './lib/base.js';
 import { NAMES, bots } from './lib/bots.js';
 import { COMMANDS, onInteraction, onMessage, slashFor } from './lib/commandes.js';
@@ -34,11 +34,13 @@ async function register(role) {
 // Bots prêts
 bots.main.once('clientReady', async (c) => {
   console.log(`${NAMES.main} connecté : ${c.user.tag}`);
+  c.user.setPresence({ activities: [{ name: '/help', type: ActivityType.Listening }], status: 'online' });
   const n = await register('main').catch((e) => console.error('[slash]', e?.message || e));
   if (n !== undefined) console.log(`${NAMES.main} : ${n} commandes slash`);
 });
 bots.guard.once('clientReady', async (c) => {
   console.log(`${NAMES.guard} connecté : ${c.user.tag}`);
+  c.user.setPresence({ activities: [{ name: 'le serveur', type: ActivityType.Watching }], status: 'online' });
   const n = await register('guard').catch((e) => console.error('[slash]', e?.message || e));
   if (n !== undefined) console.log(`${NAMES.guard} : ${n} commandes slash`);
   for (const g of c.guilds.cache.values()) await boot(g).catch((e) => console.error(`[démarrage] ${g.name} :`, e?.message || e));
