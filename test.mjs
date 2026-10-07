@@ -302,13 +302,22 @@ ok('aide owner complète', lines(helpOf(CREATOR, null)).includes('=hierarchie'))
 // Routeur simulé
 bots.main.user = { id: id(80), tag: 'commu' };
 bots.guard.user = { id: id(81), tag: 'protect' };
-for (const b of [id(80), id(81)]) base.db.prepare("INSERT OR REPLACE INTO bot_access(guild_id,bot_id,bot_name,status,requested_at) VALUES(?,?,?,'accepted',?)").run(G, b, 'test', Date.now());
+for (const b of [id(80), id(81)])
+  base.db
+    .prepare("INSERT OR REPLACE INTO bot_access(guild_id,bot_id,bot_name,status,requested_at) VALUES(?,?,?,'accepted',?)")
+    .run(G, b, 'test', Date.now());
 bots.main.guilds.cache.set(G, guild);
 const fakeMessage = (client, uid, content, m = member(uid, [])) => {
   const out = { replies: [], sent: [], deleted: false };
   const author = { id: uid, bot: false, tag: uid, username: uid, displayAvatarURL: () => undefined };
   out.message = {
-    author, content, client, guild, member: m, reference: null, channelId: id(70),
+    author,
+    content,
+    client,
+    guild,
+    member: m,
+    reference: null,
+    channelId: id(70),
     channel: { id: id(70), name: 'général', send: async (p) => (out.sent.push(p), { delete: async () => {} }), sendTyping: async () => {} },
     reply: async (p) => (out.replies.push(p), { delete: async () => {} }),
     delete: async () => ((out.deleted = true), true),
@@ -345,7 +354,9 @@ const text = (p) => JSON.stringify(p?.embeds?.map((e) => e.toJSON?.() ?? e) ?? [
   ok('mot interdit supprimé', t.deleted && t.sent.length === 1);
 }
 {
-  base.db.prepare('INSERT OR REPLACE INTO protected_channels(guild_id,channel_id,min_level,role_id,created_at) VALUES(?,?,?,?,?)').run(G, id(70), 80, null, Date.now());
+  base.db
+    .prepare('INSERT OR REPLACE INTO protected_channels(guild_id,channel_id,min_level,role_id,created_at) VALUES(?,?,?,?,?)')
+    .run(G, id(70), 80, null, Date.now());
   const t = fakeMessage(bots.main, id(50), 'coucou');
   await K.onMessage(t.message);
   ok('salon réservé appliqué', t.deleted);
@@ -363,7 +374,11 @@ const text = (p) => JSON.stringify(p?.embeds?.map((e) => e.toJSON?.() ?? e) ?? [
 // Bannissement simulé
 {
   const banned = new Set();
-  const people = new Map([[id(10), modo], [id(11), admin], [id(12), head]]);
+  const people = new Map([
+    [id(10), modo],
+    [id(11), admin],
+    [id(12), head],
+  ]);
   guild.bans = {
     fetch: async (uid) => {
       if (uid === undefined) return new Map([...banned].map((x) => [x, { user: { id: x, tag: x }, reason: null }]));
