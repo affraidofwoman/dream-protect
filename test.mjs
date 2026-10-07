@@ -333,7 +333,7 @@ const text = (p) => JSON.stringify(p?.embeds?.map((e) => e.toJSON?.() ?? e) ?? [
 {
   const t = fakeMessage(bots.main, id(50), `+ban ${id(10)}`);
   await K.onMessage(t.message);
-  ok('+ban refusé à un membre', t.replies.length === 1 && text(t.replies[0]).includes('pas accès'));
+  ok('+ban ignoré sans bruit pour un membre', t.replies.length === 0);
 }
 {
   const t = fakeMessage(bots.main, id(21), '=hierarchie', member(id(21), []));

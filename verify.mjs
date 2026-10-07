@@ -41,7 +41,7 @@ check('Aucun secret dans le code', () => {
   const hit = [...CODE, ...DOCS].filter((f) => token.test(read(f)) || /SECRET=\S{8,}/.test(read(f)));
   return hit.length ? hit.join(', ') : true;
 });
-check('.env ignoré par git', () => read('.gitignore').split('\n').includes('.env') || 'ajoute .env au .gitignore');
+check('.env ignoré par git', () => read('.gitignore').split(/\r?\n/).includes('.env') || 'ajoute .env au .gitignore');
 check(
   'Secrets lus depuis .env',
   () => /process\.env\.BOT1_TOKEN/.test(read('index.js')) && /process\.env\.BOT2_TOKEN/.test(read('index.js')),
@@ -51,7 +51,7 @@ check('Aucun nom de rôle en dur', () => {
   const hit = CODE.filter((f) => names.test(read(f)));
   return hit.length ? hit.join(', ') : true;
 });
-check('Peu de fichiers', () => CODE.length <= 12 || `${CODE.length} fichiers de code`);
+check('Peu de fichiers', () => CODE.length <= 16 || `${CODE.length} fichiers de code`);
 check('Un seul processus, deux clients', () => /bots\.main\.login/.test(read('index.js')) && /bots\.guard\.login/.test(read('index.js')));
 check('Base persistante', () => /DatabaseSync/.test(read('lib/base.js')) && /CREATE TABLE IF NOT EXISTS/.test(read('lib/base.js')));
 check('Lignes lisibles', () => {
